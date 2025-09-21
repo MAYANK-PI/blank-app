@@ -23,7 +23,7 @@ except Exception:
     SARIMA = False
 
 # --- Load Data ---
-st.title("📈 NIFTY50 Stock Forecast Dashboard")
+st.title("📈 NIFTY50 Stock Price Forecasting with LSTM")
 
 uploaded_file = st.file_uploader("Upload your stock CSV (with Date & Close)", type=["csv"])
 if uploaded_file:
