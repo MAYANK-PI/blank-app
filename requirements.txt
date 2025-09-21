@@ -1,6 +1,16 @@
-streamlit
+# Core
 pandas
+numpy
+
+# Visualization
 matplotlib
 seaborn
-numpy
-scikit
+
+# Forecasting / stats
+scikit-learn
+statsmodels
+pmdarima
+prophet
+
+# App
+streamlit
