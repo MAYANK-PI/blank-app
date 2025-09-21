@@ -1,10 +1,2 @@
 streamlit
-Python
-Pandas
-NumPy
-Matplotlib
-Seaborn
-Plotly
-Scikit-learn
-Statsmodels
-TensorFlow
+
