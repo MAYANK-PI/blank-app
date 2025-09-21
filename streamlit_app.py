@@ -1,111 +1,102 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 
-# --- Try imports safely ---
-try:
-    from pmdarima import auto_arima
-    PMDARIMA = True
-except Exception:
-    PMDARIMA = False
+st.title("📈 NIFTY 50 Stock Forecasting with LSTM")
 
-try:
-    from prophet import Prophet
-    PROPHET = True
-except Exception:
-    PROPHET = False
-
-try:
-    from statsmodels.tsa.statespace.sarimax import SARIMAX
-    SARIMA = True
-except Exception:
-    SARIMA = False
-
-# --- Load Data ---
-st.title("📈 NIFTY50 Stock Price Forecasting with LSTM")
-
-uploaded_file = st.file_uploader("Upload your stock CSV (with Date & Close)", type=["csv"])
+# --- Upload CSV ---
+uploaded_file = st.file_uploader("Upload NIFTY50 CSV (Date, Close)", type=["csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file, parse_dates=["Date"])
-    df = df[["Date", "Close"]].dropna()
-    df = df.sort_values("Date")
-    st.write("### Raw Data", df.head())
+    df = df[["Date", "Close"]].dropna().sort_values("Date")
 
-    # Plot original series
+    st.write("### Raw Data", df.tail())
+
+    # --- Moving Average ---
+    df["MA20"] = df["Close"].rolling(20).mean()
     fig, ax = plt.subplots()
     ax.plot(df["Date"], df["Close"], label="Close Price")
-    ax.set_title("NIFTY50 Closing Price")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Close")
+    ax.plot(df["Date"], df["MA20"], label="20-Day MA")
+    ax.set_title("NIFTY50 Close Price with Moving Average")
     ax.legend()
     st.pyplot(fig)
 
-    # --- Model Selection ---
-    st.sidebar.header("Select Forecasting Model")
-    model_choice = st.sidebar.selectbox(
-        "Choose model",
-        ["ARIMA (auto)", "SARIMA", "Prophet"]
-    )
+    # --- Data Preparation for LSTM ---
+    data = df[["Close"]].values
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data)
 
-    horizon = st.sidebar.slider("Forecast Horizon (days)", 30, 365, 90)
+    train_size = int(len(scaled_data) * 0.8)
+    train_data, test_data = scaled_data[:train_size], scaled_data[train_size:]
 
-    # --- Forecasting ---
-    if model_choice == "ARIMA (auto)":
-        if PMDARIMA:
-            st.write("### Forecast with Auto ARIMA")
-            series = df.set_index("Date")["Close"]
+    def create_dataset(dataset, time_step=60):
+        X, y = [], []
+        for i in range(len(dataset) - time_step - 1):
+            X.append(dataset[i:(i+time_step), 0])
+            y.append(dataset[i+time_step, 0])
+        return np.array(X), np.array(y)
 
-            model = auto_arima(series, seasonal=False, stepwise=True)
-            forecast = model.predict(n_periods=horizon)
+    time_step = 60
+    X_train, y_train = create_dataset(train_data, time_step)
+    X_test, y_test = create_dataset(test_data, time_step)
 
-            future_dates = pd.date_range(df["Date"].iloc[-1], periods=horizon+1, freq="D")[1:]
-            forecast_df = pd.DataFrame({"Date": future_dates, "Forecast": forecast})
+    # Reshape for LSTM [samples, time steps, features]
+    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-            fig, ax = plt.subplots()
-            ax.plot(df["Date"], df["Close"], label="History")
-            ax.plot(forecast_df["Date"], forecast_df["Forecast"], label="ARIMA Forecast")
-            ax.legend()
-            st.pyplot(fig)
-        else:
-            st.error("pmdarima not available in this environment.")
+    # --- Build LSTM Model ---
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
+        Dropout(0.2),
+        LSTM(50, return_sequences=False),
+        Dropout(0.2),
+        Dense(25),
+        Dense(1)
+    ])
+    model.compile(optimizer="adam", loss="mean_squared_error")
 
-    elif model_choice == "SARIMA":
-        if SARIMA:
-            st.write("### Forecast with SARIMA")
-            series = df.set_index("Date")["Close"]
+    # --- Train ---
+    model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=0)
 
-            # Example order, should tune
-            model = SARIMAX(series, order=(5,1,0), seasonal_order=(1,1,1,12))
-            results = model.fit(disp=False)
+    # --- Prediction ---
+    train_pred = model.predict(X_train)
+    test_pred = model.predict(X_test)
 
-            forecast = results.get_forecast(steps=horizon)
-            forecast_df = forecast.summary_frame()
+    train_pred = scaler.inverse_transform(train_pred)
+    test_pred = scaler.inverse_transform(test_pred)
+    y_test_rescaled = scaler.inverse_transform(y_test.reshape(-1, 1))
 
-            fig, ax = plt.subplots()
-            ax.plot(series.index, series, label="History")
-            ax.plot(forecast_df.index, forecast_df["mean"], label="SARIMA Forecast")
-            ax.fill_between(forecast_df.index,
-                            forecast_df["mean_ci_lower"],
-                            forecast_df["mean_ci_upper"],
-                            color="k", alpha=0.1)
-            ax.legend()
-            st.pyplot(fig)
-        else:
-            st.error("SARIMA (statsmodels) not available.")
+    # --- Plot Actual vs Prediction ---
+    fig, ax = plt.subplots()
+    ax.plot(df["Date"].iloc[-len(y_test):], y_test_rescaled, label="Actual")
+    ax.plot(df["Date"].iloc[-len(y_test):], test_pred, label="Predicted")
+    ax.set_title("Actual vs Predicted Closing Price (Test Data)")
+    ax.legend()
+    st.pyplot(fig)
 
-    elif model_choice == "Prophet":
-        if PROPHET:
-            st.write("### Forecast with Prophet")
-            prophet_df = df.rename(columns={"Date": "ds", "Close": "y"})
+    # --- Forecast Next 3 Days ---
+    last_60 = scaled_data[-60:]
+    last_60 = last_60.reshape(1, -1, 1)
 
-            model = Prophet(daily_seasonality=True)
-            model.fit(prophet_df)
+    future_preds = []
+    input_seq = last_60.copy()
 
-            future = model.make_future_dataframe(periods=horizon)
-            forecast = model.predict(future)
+    for _ in range(3):  # predict next 3 days
+        pred = model.predict(input_seq)[0][0]
+        future_preds.append(pred)
 
-            fig = model.plot(forecast)
-            st.pyplot(fig)
-        else:
-            st.error("Prophet not available in this environment.")
+        input_seq = np.append(input_seq[:, 1:, :], [[[pred]]], axis=1)
+
+    future_preds = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
+
+    st.write("### Next 3 Days Forecast")
+    future_df = pd.DataFrame({
+        "Day": ["Day 1", "Day 2", "Day 3"],
+        "Predicted Close": future_preds.flatten()
+    })
+    st.write(future_df)
