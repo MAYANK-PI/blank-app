@@ -1,122 +1,76 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import plotly.express as px
 import matplotlib.pyplot as plt
-import os
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from math import sqrt
+import seaborn as sns
 
-# ----------------- Streamlit Page Config -----------------
-st.set_page_config(layout="wide", page_title="📈 Stock Forecasting Dashboard")
+st.set_page_config(page_title="Nifty50 Forecast Dashboard", layout="wide")
 
-st.title("📊 Stock Market Time Series Forecasting")
-st.markdown("This app compares *ARIMA, Prophet, SARIMA, and LSTM* forecasts with actual stock prices.")
+# =============================
+# 1️⃣ App Title
+# =============================
+st.title("📈 Nifty50 Forecast Dashboard")
+st.markdown("Compare forecasts from ARIMA, SARIMA, Prophet, and LSTM models.")
 
-# ----------------- Helper Functions -----------------
-def read_forecast_file(path):
-    """Flexible reader for forecast files"""
-    if not os.path.exists(path):
-        return None
-    try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        if df.shape[1] == 1:
-            return df.iloc[:, 0].rename(os.path.splitext(os.path.basename(path))[0])
-        if "yhat" in df.columns:  # Prophet style
-            return pd.Series(df["yhat"].values, index=pd.to_datetime(df["ds"]))
-        for col in df.columns:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                return df[col].rename(os.path.splitext(os.path.basename(path))[0])
-    except Exception as e:
-        st.warning(f"Could not read {path}: {e}")
-    return None
+# =============================
+# 2️⃣ Upload Forecast CSV
+# =============================
+uploaded_file = st.file_uploader("Upload your forecast CSV", type="csv")
 
-def load_main():
-    """Load main stock dataset"""
-    for fname in ["nifty50_clean.csv", "nifty50.csv"]:
-        if os.path.exists(fname):
-            return pd.read_csv(fname, parse_dates=["Date"], index_col="Date")
-    return None
+if uploaded_file:
+    df = pd.read_csv(uploaded_file, parse_dates=["Date"])
+    st.subheader("Data Preview")
+    st.dataframe(df.head())
 
-# ----------------- Load Data -----------------
-df = load_main()
-if df is None:
-    st.error("❌ No Nifty50 data found! Place nifty50.csv or nifty50_clean.csv in the folder.")
-    uploaded = st.file_uploader("Or upload a stock CSV file (with 'Date' & 'Close' columns)", type=["csv"])
-    if uploaded:
-        df = pd.read_csv(uploaded, parse_dates=["Date"], index_col="Date")
-        st.success("✅ File uploaded successfully.")
+    # =============================
+    # 3️⃣ Sidebar Filters
+    # =============================
+    st.sidebar.header("Filter Options")
+    start_date = st.sidebar.date_input("Start Date", df["Date"].min())
+    end_date = st.sidebar.date_input("End Date", df["Date"].max())
+    models = st.sidebar.multiselect(
+        "Select Models", 
+        options=["ARIMA", "SARIMA", "Prophet", "LSTM"], 
+        default=["ARIMA", "SARIMA", "Prophet", "LSTM"]
+    )
 
-if df is None:
-    st.stop()
+    filtered_df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
-# ----------------- Show Data -----------------
-st.subheader("📂 Data Preview")
-st.dataframe(df.head())
+    # =============================
+    # 4️⃣ Actual vs Predicted Chart
+    # =============================
+    st.subheader("Actual vs Predicted Prices")
+    fig = px.line(filtered_df, x="Date", y="Actual", color_discrete_sequence=["black"], labels={"Actual": "Price"})
+    for model in models:
+        if model in filtered_df.columns:
+            fig.add_scatter(x=filtered_df["Date"], y=filtered_df[model], mode="lines", name=model)
+    st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("📈 Historical Closing Price")
-st.line_chart(df["Close"])
+    # =============================
+    # 5️⃣ Error Metrics Table
+    # =============================
+    st.subheader("Forecast Errors")
+    error_dict = {}
+    for model in models:
+        filtered_df[f"{model}_Error"] = filtered_df["Actual"] - filtered_df[model]
+        mse = (filtered_df[f"{model}_Error"]**2).mean()
+        rmse = mse ** 0.5
+        mae = filtered_df[f"{model}_Error"].abs().mean()
+        error_dict[model] = {"MSE": round(mse,2), "RMSE": round(rmse,2), "MAE": round(mae,2)}
 
-# ----------------- Load Forecasts -----------------
-forecast_files = {
-    "ARIMA": "arima_forecast.csv",
-    "Prophet": "prophet_forecast.csv",
-    "SARIMA": "sarima_forecast.csv",
-    "LSTM": "lstm_forecast.csv",
-}
-forecasts = {}
-for name, fname in forecast_files.items():
-    s = read_forecast_file(fname)
-    if s is not None:
-        forecasts[name] = s
+    errors_df = pd.DataFrame(error_dict).T
+    st.dataframe(errors_df)
 
-if not forecasts:
-    st.info("⚠ No forecast files found (arima_forecast.csv, prophet_forecast.csv, etc.).")
-    st.stop()
+    # =============================
+    # 6️⃣ Error Plot
+    # =============================
+    st.subheader("Forecast Errors Over Time")
+    fig2, ax = plt.subplots(figsize=(12,4))
+    for model in models:
+        sns.lineplot(data=filtered_df, x="Date", y=f"{model}_Error", label=f"{model} Error", ax=ax)
+    ax.set_ylabel("Error")
+    ax.set_title("Forecast Errors")
+    st.pyplot(fig2)
 
-# ----------------- Model Comparison -----------------
-st.subheader("🔍 Compare Forecast Models")
-
-results = pd.DataFrame({"Actual": df["Close"]})
-for name, series in forecasts.items():
-    results[name] = series
-
-results = results.dropna(how="all")
-
-# Select models
-selected = st.multiselect("Select models to compare", list(forecasts.keys()), default=list(forecasts.keys()))
-
-# ----------------- Evaluation Metrics -----------------
-st.subheader("📊 Model Performance Metrics")
-metrics = []
-for name in selected:
-    if name in results.columns and results[name].notna().any():
-        y_true = results["Actual"].dropna()
-        y_pred = results[name].reindex(y_true.index).dropna()
-        common_idx = y_true.index.intersection(y_pred.index)
-        if len(common_idx) > 0:
-            mae = mean_absolute_error(y_true.loc[common_idx], y_pred.loc[common_idx])
-            rmse = sqrt(mean_squared_error(y_true.loc[common_idx], y_pred.loc[common_idx]))
-            mape = np.mean(np.abs((y_true.loc[common_idx] - y_pred.loc[common_idx]) / y_true.loc[common_idx])) * 100
-            metrics.append({"Model": name, "MAE": mae, "RMSE": rmse, "MAPE": mape})
-
-if metrics:
-    metrics_df = pd.DataFrame(metrics).set_index("Model")
-    st.dataframe(metrics_df.style.format({"MAE": "{:.2f}", "RMSE": "{:.2f}", "MAPE": "{:.2f}%"}))
 else:
-    st.warning("⚠ Not enough overlapping data to compute metrics.")
-
-# ----------------- Plot Actual vs Forecast -----------------
-st.subheader("📉 Actual vs Forecasted Prices")
-fig, ax = plt.subplots(figsize=(12, 6))
-ax.plot(results.index, results["Actual"], label="Actual", color="black")
-for name in selected:
-    if name in results.columns:
-        ax.plot(results.index, results[name], linestyle="--", label=name)
-ax.set_title("Stock Price Forecast Comparison")
-ax.legend()
-st.pyplot(fig)
-
-# ----------------- Download Combined Results -----------------
-st.subheader("⬇ Download Results")
-csv = results.to_csv().encode("utf-8")
-st.download_button("Download as CSV", csv, "combined_results.csv", "text/csv")
+    st.info("Please upload a forecast CSV file with columns: Date, Actual, ARIMA, SARIMA, Prophet, LSTM")
