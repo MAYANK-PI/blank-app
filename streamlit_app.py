@@ -1,107 +1,88 @@
-# app.py
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.layers import Dense, LSTM
+import matplotlib.pyplot as plt
 
-st.title("📈 NIFTY 50 Stock Forecasting with LSTM")
+st.title("Nifty 50 Stock Price Forecasting (Next 3 Days)")
 
-# --- Load CSV permanently (place 'nifty50.csv' in same folder) ---
-CSV_PATH = "nifty50.csv"   # change filename if needed
-df = pd.read_csv(CSV_PATH, parse_dates=["Date"])
-df = df[["Date", "Close"]].dropna().sort_values("Date")
+# -----------------
+# Get stock data
+# -----------------
+ticker = "^NSEI"  # Nifty 50 Index
+data = yf.download(ticker, period="6mo")  # last 6 months
+data = data[['Close']]
+st.subheader("Latest Closing Prices")
+st.line_chart(data['Close'])
 
-st.write("### Raw Data", df.tail())
-
-# --- Moving Average ---
-df["MA20"] = df["Close"].rolling(20).mean()
-fig, ax = plt.subplots()
-ax.plot(df["Date"], df["Close"], label="Close Price")
-ax.plot(df["Date"], df["MA20"], label="20-Day MA")
-ax.set_title("NIFTY50 Close Price with Moving Average")
-ax.legend()
-st.pyplot(fig)
-
-# --- Data Preparation ---
-data = df[["Close"]].values
-scaler = MinMaxScaler(feature_range=(0, 1))
+# -----------------
+# Preprocessing
+# -----------------
+scaler = MinMaxScaler(feature_range=(0,1))
 scaled_data = scaler.fit_transform(data)
 
-train_size = int(len(scaled_data) * 0.8)
-train_data, test_data = scaled_data[:train_size], scaled_data[train_size:]
+prediction_days = 60  # LSTM window size
+x_train, y_train = [], []
 
-def create_dataset(dataset, time_step=60):
-    X, y = [], []
-    for i in range(len(dataset) - time_step - 1):
-        X.append(dataset[i:(i+time_step), 0])
-        y.append(dataset[i+time_step, 0])
-    return np.array(X), np.array(y)
+for i in range(prediction_days, len(scaled_data)):
+    x_train.append(scaled_data[i-prediction_days:i,0])
+    y_train.append(scaled_data[i,0])
 
-time_step = 60
-X_train, y_train = create_dataset(train_data, time_step)
-X_test, y_test = create_dataset(test_data, time_step)
+x_train, y_train = np.array(x_train), np.array(y_train)
+x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
 
-X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
-X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+# -----------------
+# Build LSTM model
+# -----------------
+model = Sequential()
+model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1],1)))
+model.add(LSTM(units=50))
+model.add(Dense(1))
 
-# --- Build LSTM ---
-model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
-    Dropout(0.2),
-    LSTM(50, return_sequences=False),
-    Dropout(0.2),
-    Dense(25),
-    Dense(1)
-])
-model.compile(optimizer="adam", loss="mean_squared_error")
+model.compile(loss='mean_squared_error', optimizer='adam')
+model.fit(x_train, y_train, epochs=5, batch_size=32, verbose=1)
 
-model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=0)
+# -----------------
+# Predict next 3 days
+# -----------------
+last_60_days = scaled_data[-prediction_days:]
+future_input = last_60_days.reshape(1,-1)
+future_input = future_input[0].tolist()
 
-# --- Predictions ---
-test_pred = model.predict(X_test)
-test_pred = scaler.inverse_transform(test_pred)
-y_test_rescaled = scaler.inverse_transform(y_test.reshape(-1, 1))
+predicted_prices = []
+for i in range(3):
+    x_test = np.array(future_input[-prediction_days:])
+    x_test = x_test.reshape(1,prediction_days,1)
+    pred = model.predict(x_test)
+    future_input.append(pred[0][0])
+    predicted_prices.append(pred[0][0])
 
-fig, ax = plt.subplots()
-ax.plot(df["Date"].iloc[-len(y_test):], y_test_rescaled, label="Actual")
-ax.plot(df["Date"].iloc[-len(y_test):], test_pred, label="Predicted")
-ax.set_title("Actual vs Predicted Closing Price (Test Data)")
-ax.legend()
-st.pyplot(fig)
+predicted_prices = scaler.inverse_transform(np.array(predicted_prices).reshape(-1,1))
 
-# --- Forecast Next 3 Days ---
-last_60 = scaled_data[-60:]
-last_60 = last_60.reshape(1, -1, 1)
+# -----------------
+# Plot actual vs predicted
+# -----------------
+st.subheader("Next 3 Days Forecast vs Latest Closing Price")
+future_dates = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=3)
+forecast_df = pd.DataFrame({'Date': future_dates, 'Predicted_Close': predicted_prices.flatten()})
+st.dataframe(forecast_df)
 
-future_preds = []
-input_seq = last_60.copy()
+# Plot
+plt.figure(figsize=(10,5))
+plt.plot(data['Close'], label='Actual Closing Price')
+plt.plot(pd.date_range(start=data.index[-1], periods=4)[1:], predicted_prices, label='Forecasted Price', marker='o')
+plt.title("Nifty 50 Actual vs Predicted (Next 3 Days)")
+plt.xlabel("Date")
+plt.ylabel("Price")
+plt.legend()
+st.pyplot(plt)
 
-for _ in range(3):  # predict next 3 days
-    pred = model.predict(input_seq)[0][0]
-    future_preds.append(pred)
-    input_seq = np.append(input_seq[:, 1:, :], [[[pred]]], axis=1)
-
-future_preds = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
-
-st.write("### Next 3 Days Forecast")
-future_df = pd.DataFrame({
-    "Day": ["Day 1", "Day 2", "Day 3"],
-    "Predicted Close": future_preds.flatten()
-})
-st.write(future_df)
-
-# --- Plot Forecast Chart ---
-last_actual_dates = df["Date"].iloc[-10:]  # last 10 actual days
-last_actual_prices = df["Close"].iloc[-10:]
-
-future_dates = pd.date_range(df["Date"].iloc[-1] + pd.Timedelta(days=1), periods=3)
-
-fig, ax = plt.subplots()
-ax.plot(last_actual_dates, last_actual_prices, label="Actual (Last 10 Days)", marker="o")
-ax.plot(future_dates, future_preds.flatten(), label="Forecast (Next 3 Days)", marker="x", linestyle="--")
-ax.set_title("Next 3 Days Forecast vs Last 10 Days Actual")
-ax.legend()
-st.pyplot(fig)
+# -----------------
+# Moving Average
+# -----------------
+data['MA20'] = data['Close'].rolling(window=20).mean()
+st.subheader("Moving Average (20 days)")
+st.line_chart(data[['Close','MA20']])
