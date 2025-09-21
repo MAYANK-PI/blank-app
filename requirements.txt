@@ -1,16 +1,9 @@
-# Core
 pandas
 numpy
-
-# Visualization
 matplotlib
 seaborn
-
-# Forecasting / stats
 scikit-learn
 statsmodels
 pmdarima
 prophet
-
-# App
 streamlit
